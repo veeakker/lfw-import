@@ -6,6 +6,7 @@ import DOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
 
 const purify = DOMPurify( new JSDOM('').window );
+const IGNORED_ORGANIZATIONS=["Pintafish (VLB)"];
 
 // Assumptions
 // - there is a single offering
@@ -136,12 +137,14 @@ async function loadProduct( product, options ) {
 
   console.log(`Loading ${JSON.stringify(product)}`);
   let { productUri, admsIdentifier: _identifier } = await ensureProductMeta(product);
-  await ensureBaseProductInfo(product, productUri);
-  await ensureProductDefaultPricing(product, productUri);
-  await ensureProductOffers(product, productUri);
-  await ensureProductIngredients(product, productUri);
-  await ensureProductAllergens(product, productUri);
-  await ensureProductPicture(product, productUri);
+  if ( !IGNORED_ORGANIZATIONS.includes(product.supplier) ) {
+    await ensureBaseProductInfo(product, productUri);
+    await ensureProductDefaultPricing(product, productUri);
+    await ensureProductOffers(product, productUri);
+    await ensureProductIngredients(product, productUri);
+    await ensureProductAllergens(product, productUri);
+    await ensureProductPicture(product, productUri);
+  }
 }
 
 /**
