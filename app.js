@@ -1,8 +1,11 @@
 // see https://github.com/mu-semtech/mu-javascript-template for more info
 import { app, query, update, errorHandler, uuid, sparqlEscapeString, sparqlEscapeUri, sparqlEscapeDecimal, sparqlEscapeDateTime } from 'mu';
 import fs from 'fs';
-import DOMPurify from 'dompurify';
 import mime from 'mime';
+import DOMPurify from 'dompurify';
+import { JSDOM } from 'jsdom';
+
+const purify = DOMPurify( new JSDOM('').window );
 
 // Assumptions
 // - there is a single offering
@@ -43,6 +46,26 @@ async function ensurePage(pageNumber) {
   } catch (e) {
     console.log("Could not find file, fetching");
     let response = await fetch(visibleProductsUrl(STORE_ID, PICKUP_POINT_ID, pageNumber));
+    let jsonBody = await response.json();
+    fs.writeFileSync(filePath, JSON.stringify(jsonBody));
+    return jsonBody;
+  }
+}
+
+/**
+ * Fetches a detail page from disk if it exists or gets it from the backend and persists it to disk for later.
+ * @param {string|number} productId
+ * @param {string|number} shopId;
+ */
+async function ensureProductPage(storeId, productId) {
+  const filePath = `/page-cache/product-${productId}.json`;
+  const url = `https://api.localfoodworks.eu/api/store/${storeId}/products/${productId}`;
+
+  try {
+    return JSON.parse(fs.readFileSync(filePath));
+  } catch (e) {
+    console.log(`Could not find file, fetching ${url}`);
+    let response = await fetch(url);
     let jsonBody = await response.json();
     fs.writeFileSync(filePath, JSON.stringify(jsonBody));
     return jsonBody;
@@ -100,15 +123,24 @@ async function downloadShareFile( url, filename ) {
 /**
  * Ingests an individual product.
  * @param {Product} product
+ * @param {Object} options Options for fetching the product.
+ * @param {boolean} options.external Fetch product externally through its custom paylod.  Defaults to false.
  */
-async function loadProduct( product ) {
+async function loadProduct( product, options ) {
   // NOTE: we should search for the old information and keep its identifiers whenever possible.
+  let external = options && options.external === true;
+
+  if ( options && options.external === true ) {
+    product = await ensureProductPage(STORE_ID, product.id);
+  }
+
   console.log(`Loading ${JSON.stringify(product)}`);
   let { productUri, admsIdentifier: _identifier } = await ensureProductMeta(product);
   await ensureBaseProductInfo(product, productUri);
   await ensureProductDefaultPricing(product, productUri);
   await ensureProductOffers(product, productUri);
   await ensureProductIngredients(product, productUri);
+  await ensureProductAllergens(product, productUri);
   await ensureProductPicture(product, productUri);
 }
 
@@ -432,13 +464,13 @@ async function ensureProductIngredients(product, productUri) {
       .ingredients
       .sort((a,b) => a.position - b.position)
       .map(({name}) => name)
-      .map((name) => DOMPurify.sanitize(name, { USE_PROFILES: { html: true } }))
+      .map((name) => purify.sanitize(name, { USE_PROFILES: { html: true } }))
     : null;
 
   let ingredientsString = 
     product.ingredients
       // TODO: perform HTML escaping
-      ? `<ul>${sortedIngredientsList.map((s) => `\n  <li>${s}</li>`)}\n</ul>`
+      ? `<ul>${sortedIngredientsList.map((s) => `\n  <li>${s}</li>`).join("")}\n</ul>`
       : null;
 
   await update(`${PREFIXES}
@@ -461,6 +493,47 @@ async function ensureProductIngredients(product, productUri) {
 }
 
 /**
+ * Ingests the product allergens if they're in the payload.
+ * If they are not in the payload, they are removed.
+ * @param {Product} product The product payload.
+ * @param {string} productUri The product's URI.
+ */
+async function ensureProductAllergens(product, productUri) {
+  let sortedAllergensList = product.allergens
+    ? product
+      .allergens
+      .map(({allergen}) => allergen)
+      .sort((a,b) => a.id - b.id)
+      .map(({name}) => name)
+      .map((name) => purify.sanitize(name, { USE_PROFILES: { html: true } }))
+    : null;
+
+  let allergensString =
+    product.allergens
+      ? `<ul>${sortedAllergensList.map((s) => `\n  <li>${s}</li>`).join("")}\n</ul>`
+      : null;
+
+  await update(`${PREFIXES}
+    DELETE WHERE {
+      GRAPH <http://mu.semte.ch/application> {
+        ${sparqlEscapeUri(productUri)}
+          veeakker:allergensAsText ?oldAllergens.
+      }
+    }
+    ${ allergensString ?
+    `;
+    INSERT DATA {
+      GRAPH <http://mu.semte.ch/application> {
+        ${sparqlEscapeUri(productUri)}
+          veeakker:allergensAsText
+            ${sparqlEscapeString(allergensString)}.
+      }
+    }` : ""
+    }`);
+}
+
+
+/**
  * Ingests the product picture if it does not exist yet or if it is forced.
  * If the picture does not exist anymore, it is removed.
  *
@@ -476,8 +549,7 @@ async function ensureProductPicture(product, productUri) {
       ASK WHERE {
         ${sparqlEscapeUri(productUri)} veeakker:thumbnail ?picture.
         ?picture dct:source ${sparqlEscapeUri(product.image)}.
-        }`)).boolean
-      && false; // TODO: disable after debugging
+        }`)).boolean;
 
   if (currentPictureIsCorrect) {
     return true;
@@ -678,7 +750,7 @@ async function loadPages() {
       console.log(`LOADING PRODUCT`);
       console.log(JSON.stringify(product));
       console.log(product);
-      await loadProduct(product);
+      await loadProduct(product, { external: true });
     }
     counter++;
   } while (page.last == false)
@@ -691,7 +763,7 @@ setTimeout( async () => {
 
   // A. load one product
   // const page = await ensurePage( 0 );
-  // await loadProduct(page.content[0]);
+  // await loadProduct(page.content[0], { external: true });
   // console.log(page.content[0]);
   // console.log(JSON.stringify(page.content[0]));
 
