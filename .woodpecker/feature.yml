@@ -2,12 +2,12 @@ steps:
   build-and-push:
     image: woodpeckerci/plugin-docker-buildx
     settings:
-      repo: ${CI_REPO/mu-semtech/semtech}
-      tags: latest
+      repo: "madnificent/${CI_REPO_NAME%%service}"
+      tags: "feature-${CI_COMMIT_BRANCH##feature/}"
       username:
         from_secret: docker_username
       password:
         from_secret: docker_password
 when:
   - event: push
-    branch: [master, main]
+    branch: [feature/*]
