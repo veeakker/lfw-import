@@ -37,20 +37,32 @@ function visibleProductsUrl(storeId, pickupPointId, page = 0, pageSize = 36) {
 }
 
 /**
- * Fetches the page from disk if it exists or gets it from the backend and persists it to disk for later.
+ * Fetches and caches a JSON page
+ *
+ * @param {string} url Place to download the json body from.
+ * @param {string} filePath Place to store the JSON file under `/share`.
+ * @return {Object} Parsed JSON object.
  */
-async function ensurePage(pageNumber) {
-  const filePath = `/page-cache/${pageNumber}.json`;
-
+async function cachedJSONPage(url, filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath));
   } catch (e) {
-    console.log("Could not find file, fetching");
-    let response = await fetch(visibleProductsUrl(STORE_ID, PICKUP_POINT_ID, pageNumber));
+    console.log(`Could not find file "${filePath}" for url "${url}" , fetching`);
+    let response = await fetch(url);
     let jsonBody = await response.json();
     fs.writeFileSync(filePath, JSON.stringify(jsonBody));
     return jsonBody;
   }
+}
+
+/**
+ * Fetches the page from disk if it exists or gets it from the backend and persists it to disk for later.
+ */
+async function ensurePage( pageNumber ) {
+  const filePath = `/page-cache/${pageNumber}.json`;
+  const url = visibleProductsUrl(STORE_ID, PICKUP_POINT_ID, pageNumber);
+
+  return await cachedJSONPage(url, filePath);
 }
 
 /**
@@ -62,15 +74,7 @@ async function ensureProductPage(storeId, productId) {
   const filePath = `/page-cache/product-${productId}.json`;
   const url = `https://api.localfoodworks.eu/api/store/${storeId}/products/${productId}`;
 
-  try {
-    return JSON.parse(fs.readFileSync(filePath));
-  } catch (e) {
-    console.log(`Could not find file, fetching ${url}`);
-    let response = await fetch(url);
-    let jsonBody = await response.json();
-    fs.writeFileSync(filePath, JSON.stringify(jsonBody));
-    return jsonBody;
-  }
+  return await cachedJSONPage(url, filePath);
 }
 
 /**
