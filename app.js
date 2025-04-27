@@ -4,6 +4,7 @@ import fs from 'fs';
 import mime from 'mime';
 import DOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
+import { isAdminUser } from './lib/authorization';
 
 const purify = DOMPurify( new JSDOM('').window );
 const IGNORED_ORGANIZATIONS=["Pintafish (VLB)"];
@@ -889,6 +890,26 @@ setTimeout( async () => {
   //       .map( (product) => product.pricing.consumerPrice.measurementUnitPrice.unitOfMeasurement ))]
   // );
 }, 2000);
+
+/**
+ * Initiates a harvesting process.
+ */
+app.post('/harvest', async function(req, res) {
+  if( await isAdminUser(req) ) {
+    const jobUri = await createLoadJob();
+    try {
+      await startJob(jobUri);
+      await loadPages(jobUri);
+      await finishJob(jobUri);
+      res.status(200).send("Harvest successful");
+    } catch (e) {
+      await errorJob(jobUri);
+      res.status(500).send("Failed to harvest");
+    }
+  } else {
+    res.status(500).send("Missing access rights");
+  }
+});
 
 app.get('/', function (req, res) {
   res.send('Hello mu-javascript-template');
