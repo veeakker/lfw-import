@@ -27,6 +27,7 @@ const PREFIXES = `
   PREFIX dbpedia: <http://dbpedia.org/resource/>
   PREFIX nfo: <http://www.semanticdesktop.org/ontologies/2007/03/22/nfo#>
   PREFIX nie: <http://www.semanticdesktop.org/ontologies/2007/01/19/nie#>
+  PREFIX prov: <http://www.w3.org/ns/prov#>
 `;
 
 const STORE_ID = 2927; // VT Boutersem
@@ -130,6 +131,7 @@ async function downloadShareFile( url, filename ) {
  * @param {Product} product
  * @param {Object} options Options for fetching the product.
  * @param {boolean} options.external Fetch product externally through its custom paylod.  Defaults to false.
+ * @param {string} options.job Job to which the product harvesting will be connected.
  */
 async function loadProduct( product, options ) {
   // NOTE: we should search for the old information and keep its identifiers whenever possible.
@@ -142,6 +144,8 @@ async function loadProduct( product, options ) {
   console.log(`Loading ${JSON.stringify(product)}`);
   let { productUri, admsIdentifier: _identifier } = await ensureProductMeta(product);
   if ( !IGNORED_ORGANIZATIONS.includes(product.supplier) ) {
+    if( options.job )
+      await ensureProductJobConnection(productUri, options.job);
     await ensureBaseProductInfo(product, productUri);
     await ensureProductDefaultPricing(product, productUri);
     await ensureProductOffers(product, productUri);
@@ -149,6 +153,19 @@ async function loadProduct( product, options ) {
     await ensureProductAllergens(product, productUri);
     await ensureProductPicture(product, productUri);
   }
+}
+
+/**
+ * Connects the product to the job.
+ * @param {string} productUri URI of the product to be connected.
+ * @param {string} jobUri URI of the job to which the product should be connected.
+ */
+async function ensureProductJobConnection(productUri, jobUri) {
+  await update(`
+    ${PREFIXES}
+    INSERT DATA {
+      ${sparqlEscapeUri(productUri)} prov:wasGeneratedBy ${sparqlEscapeUri(jobUri)}
+    }`);
 }
 
 /**
@@ -636,8 +653,9 @@ async function ensureProductPicture(product, productUri) {
 /**
  * Ensures metadata about the product exists.
  * @param {Product} product
+ * @param {string|undefined} jobUri
  */
-async function ensureProductMeta( product ) {
+async function ensureProductMeta( product, jobUri ) {
   let myQuery = `${PREFIXES}
 
     SELECT ?productUri ?admsIdentifier
@@ -744,9 +762,79 @@ function printBasicPricingInfo(products) {
 }
 
 /**
+ * Constructs a new load job which can be used to link products to the job(s) that fetched them.
+ * @return {string} URI of this job.
+ */
+async function createLoadJob() {
+  const lfwFetchJobUuid = uuid();
+  const lfwFetchJobUri = `http://veeakker.be/lfw-jobs/${lfwFetchJobUuid}`;
+
+  // TODO: veeakker:LfwFetchJob should subclass cogs:Job.
+
+  await update(`
+    ${PREFIXES}
+    INSERT DATA {
+      GRAPH <http://mu.semte.ch/application> {
+        ${sparqlEscapeUri(lfwFetchJobUri)}
+          a veeakker:LfwFetchJob;
+          mu:uuid ${sparqlEscapeString(lfwFetchJobUuid)};
+          dct:created ${sparqlEscapeDateTime(new Date())}.
+      }
+          }`);
+
+  return lfwFetchJobUri;
+}
+
+/**
+ * Starts the job.
+ * @param {string} jobUri Job identifier to start.
+ */
+async function startJob(jobUri) {
+  await update(`
+    ${PREFIXES}
+    DELETE WHERE {
+      ${sparqlEscapeUri(jobUri)} adms:status ?status.
+    };
+    INSERT DATA {
+      ${sparqlEscapeUri(jobUri)} adms:status <http://veeakker.be/lfw-job-statusses/running>.
+    }`);
+}
+
+/**
+ * Stops the job.
+ * @param {string} jobUri Job identifier to stop.
+ */
+async function finishJob(jobUri) {
+  await update(`
+    ${PREFIXES}
+    DELETE WHERE {
+      ${sparqlEscapeUri(jobUri)} adms:status ?status.
+    };
+    INSERT DATA {
+      ${sparqlEscapeUri(jobUri)} adms:status <http://veeakker.be/lfw-job-statusses/finished>.
+    }`);
+}
+
+/**
+ * Errors the job.
+ * @param {string} jobUri Job identifier to error.
+ */
+async function errorJob(jobUri) {
+  // TODO: allow comment for failed job.
+  await update(`
+    ${PREFIXES}
+    DELETE WHERE {
+      ${sparqlEscapeUri(jobUri)} adms:status ?status.
+    };
+    INSERT DATA {
+      ${sparqlEscapeUri(jobUri)} adms:status <http://veeakker.be/lfw-job-statusses/error>.
+    }`);
+}
+
+/**
   * Loads the pages by walking over each page number.
  */
-async function loadPages() {
+async function loadPages(jobUri) {
   let counter = 0;
   let page;
   do {
@@ -757,7 +845,7 @@ async function loadPages() {
       console.log(`LOADING PRODUCT`);
       console.log(JSON.stringify(product));
       console.log(product);
-      await loadProduct(product, { external: true });
+      await loadProduct(product, { job: jobUri, external: true });
     }
     counter++;
   } while (page.last == false)
@@ -775,8 +863,17 @@ setTimeout( async () => {
   // console.log(JSON.stringify(page.content[0]));
 
   // B. load all pages
-  await loadPages();
-
+  const loadAllPages = false;
+  if (loadAllPages) {
+    const jobUri = await createLoadJob();
+    try {
+      await startJob(jobUri);
+      await loadPages(jobUri);
+      await finishJob(jobUri);
+    } catch (e) {
+      await errorJob(jobUri);
+    }
+  }
   // C. debugging information
   // for ( const product of page.content ) {
   //   console.log(`LOADING PRODUCT`);
