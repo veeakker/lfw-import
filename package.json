@@ -1,4 +1,10 @@
 {
+  "name": "import-from-lfw-api",
+  "version": "0.1.0",
+  "description": "Imports products from LFW through the API",
+  "author": "Aad Versteden <aad.versteden@redpencil.io>",
+  "license": "MIT",
+  "type": "module",
   "dependencies": {
     "dompurify": "^3.2.5",
     "jsdom": "^26.1.0",
