@@ -1,5 +1,5 @@
 // see https://github.com/mu-semtech/mu-javascript-template for more info
-import { app, query, update, errorHandler, uuid, sparqlEscapeString, sparqlEscapeUri, sparqlEscapeDecimal, sparqlEscapeDateTime } from 'mu';
+import { app, query, update, errorHandler, uuid, sparqlEscapeString, sparqlEscapeUri, sparqlEscapeDecimal, sparqlEscapeDateTime, sparqlEscapeBool } from 'mu';
 import fs from 'fs';
 import mime from 'mime';
 import DOMPurify from 'dompurify';
@@ -59,6 +59,7 @@ async function cachedJSONPage(url, filePath) {
 
 /**
  * Fetches the page from disk if it exists or gets it from the backend and persists it to disk for later.
+ * @return {Promise<Object>}
  */
 async function ensurePage( pageNumber ) {
   const filePath = `/page-cache/${pageNumber}.json`;
@@ -71,6 +72,7 @@ async function ensurePage( pageNumber ) {
  * Fetches a detail page from disk if it exists or gets it from the backend and persists it to disk for later.
  * @param {string|number} productId
  * @param {string|number} shopId;
+ * @return {Promise<ProductDetail>}
  */
 async function ensureProductPage(storeId, productId) {
   const filePath = `/page-cache/product-${productId}.json`;
@@ -80,10 +82,24 @@ async function ensureProductPage(storeId, productId) {
 }
 
 /**
+ * Fetches the overview of suppliers from disk if it exists or gets it from the backend and persists it to disk for
+ * later use.
+ * @param {string|number} storeId;
+ * @return {Promise<[SupplierSummary]>} Parsed JSON page of suppliers.
+ */
+async function ensureSuppliersPage(storeId) {
+  const filePath = `/page-cache/shop-${storeId}-suppliers.json`;
+  const url = `https://api.localfoodworks.eu/api/store/${storeId}/suppliers`;
+
+  return await cachedJSONPage(url, filePath);
+}
+
+/**
  * Downloads a file to be stored on a SHARE link in the files.
  *
  * @param {string} url Place to download the file from.
  * @param {string} filename Place to store the file.
+ * @return {Promise}
  */
 async function downloadShareFile( url, filename ) {
   const filePath = `/share/${filename}`;
@@ -95,7 +111,7 @@ async function downloadShareFile( url, filename ) {
 }
 
 /**
- * @typedef {Object} Product
+ * @typedef {Object} BaseProduct
  * @property {number} id Product identifier
  * @property {string} name Product name eg: 5 pannenkoeken
  * @property {string} supplier Supplier as string identifier eg: "Het Nijswolkje",
@@ -128,16 +144,38 @@ async function downloadShareFile( url, filename ) {
  */
 
 /**
+ * @typedef {Object} SupplierSummary
+ * @property {number} id Supplier identifier.
+ * @property {string} name Name of the supplier as presented in the interface.
+ */
+
+/**
+ * @typedef {string} SupplierName
+ */
+
+/**
+ * @typedef {Object} SupplierInfo
+ * @property {string} supplier.name Name of the supplier
+ * @property {string} supplier.description Description of the supplier as formattet text (non html)
+ * @property {string} supplier.emailAddress Email address of the supplier
+ * @property {string} supplier.image Promotional picture belonging to the supplier
+ */
+
+/**
+ * @typedef {BaseProduct & { supplier: SupplierName }} ProductListed
+ * @typedef {BaseProduct & { supplier: SupplierInfo }} ProductDetail
+ * @typedef {ProductListed | ProductDetail} Product
+ */
+
+/**
  * Ingests an individual product.
- * @param {Product} product
+ * @param {ProductListed} product
  * @param {Object} options Options for fetching the product.
  * @param {boolean} options.external Fetch product externally through its custom paylod.  Defaults to false.
  * @param {string} options.job Job to which the product harvesting will be connected.
  */
 async function loadProduct( product, options ) {
   // NOTE: we should search for the old information and keep its identifiers whenever possible.
-  let external = options && options.external === true;
-
   if ( options && options.external === true ) {
     product = await ensureProductPage(STORE_ID, product.id);
   }
@@ -149,10 +187,14 @@ async function loadProduct( product, options ) {
       await ensureProductJobConnection(productUri, options.job);
     await ensureBaseProductInfo(product, productUri);
     await ensureProductDefaultPricing(product, productUri);
-    await ensureProductOffers(product, productUri);
+    const offeringResources = await ensureProductOffers(product, productUri);
     await ensureProductIngredients(product, productUri);
     await ensureProductAllergens(product, productUri);
     await ensureProductPicture(product, productUri);
+    if (typeof product.supplier === "object") {
+      // product has a supplier object so it has to be a ProductDetail
+      await loadProductSupplier( offeringResources.offering, product.supplier );
+    }
   }
 }
 
@@ -323,6 +365,7 @@ async function ensureTargetUnitResource( productUri ) {
  * Stores the product's pricing.
  * @param {Product} product The product payload.
  * @param {string} productUri Internal identifier
+ * @return {Promise<OfferingResources>}
  */
 async function ensureProductOffers(product, productUri) {
   // We assume there's one product offering
@@ -361,6 +404,7 @@ async function ensureProductOffers(product, productUri) {
         gr:amountOfThisGood ${sparqlEscapeDecimal(amount)};
         gr:hasUnitOfMeasurement ${sparqlEscapeString(unit)}
     }`);
+  return offering;
 }
 
 /**
@@ -725,7 +769,7 @@ async function ensureProductMeta( product, jobUri ) {
     } WHERE {
       GRAPH <http://mu.semte.ch/application> {
         VALUES ?p {
-          dct:title dct:description veeakker:hasLabel veeakker:plu veeakker:sortIndex        
+          dct:title dct:description veeakker:hasLabel veeakker:plu veeakker:sortIndex veeakker:lfwProductCanBeOrderedByFractionOfOrderUnit
         }
         ${sparqlEscapeUri(productUri)} ?p ?o.
       }
@@ -741,7 +785,8 @@ async function ensureProductMeta( product, jobUri ) {
           ${product.bio ? `veeakker:hasLabel <http://veeakker.be/labels/bio>;` : ""}
           # veeaker:isPublic will just not be set
           veeakker:plu ${sparqlEscapeDecimal(1000000 + product.id)};
-          veeakker:sortIndex ${sparqlEscapeDecimal(1000000 + product.id)}.
+          veeakker:sortIndex ${sparqlEscapeDecimal(1000000 + product.id)};
+          veeakker:lfwProductCanBeOrderedByFractionOfOrderUnit ${sparqlEscapeBool(product.canBeOrderedAsFractionOfOrderUnit)}.
       }
     }`);
 }
@@ -764,7 +809,7 @@ function printBasicPricingInfo(products) {
 
 /**
  * Constructs a new load job which can be used to link products to the job(s) that fetched them.
- * @return {string} URI of this job.
+ * @return {Promise<string>} URI of this job.
  */
 async function createLoadJob() {
   const lfwFetchJobUuid = uuid();
@@ -833,6 +878,108 @@ async function errorJob(jobUri) {
 }
 
 /**
+ * Loads the suppliers by fetching the relevant document and updating their core information.
+ *
+ * This may, in the future, also fetch information from the suppliers' detail page.
+ */
+async function loadSuppliers(jobUri) {
+  const suppliers = await ensureSuppliersPage(STORE_ID);
+
+  // We want to keep the URIs of the entities which already exist, hence we first ensure we have an object for each ID,
+  // then we start filling in the details.
+  for( const supplier of suppliers ) {
+    const hasSupplier = (await query(`${PREFIXES}
+    ASK {
+      ?fneBusiness a gr:BusinessEntity;
+        adms:identifier ?fneIdentifier.
+      ?fneIdentifier dct:creator <https://localfoodworks.eu/>;
+        skos:notation ${sparqlEscapeString(`${supplier.id}`)}.
+    }`)).boolean;
+    if( !hasSupplier ) {
+      const supplierUuid = uuid();
+      const supplierUri = `http://veeakker.be/suppliers/${supplierUuid}`;
+      const identifierUuid = uuid();
+      const identifierUri = `http://data.redpencil.io/identifiers/${identifierUuid}`;
+
+      await update(`${PREFIXES}
+      INSERT DATA {
+        ${sparqlEscapeUri(supplierUri)}
+          a gr:BusinessEntity;
+          mu:uuid ${sparqlEscapeString(supplierUuid)};
+          adms:identifier ${sparqlEscapeUri(identifierUri)}.
+        ${sparqlEscapeUri(identifierUri)}
+          a adms:Identifier;
+          mu:uuid ${sparqlEscapeString(identifierUuid)};
+          skos:notation ${sparqlEscapeString(`${supplier.id}`)};
+          dct:creator <https://localfoodworks.eu/>;
+          dct:title ${sparqlEscapeString(`LFW Supplier ID ${supplier.id}`)}.
+          }`);
+    }
+  }
+
+  // Now we know all entities have the desired identifier and we can set other properties fetched.  Today that's only the name.
+
+  await update(`${PREFIXES}
+  DELETE {
+    ?supplier gr:name ?oldName.
+  } INSERT {
+    ?supplier gr:name ?newName.
+  } WHERE {
+  VALUES ( ?externalIdentifier ?newName ) {
+    ${suppliers.map( (supplier) => {
+      return `( ${sparqlEscapeString(`${supplier.id}`)} ${sparqlEscapeString(supplier.name)})`
+    }).join(`\n    `)}
+    }
+    ?supplier a gr:BusinessEntity;
+      adms:identifier ?identifier.
+    ?identifier dct:creator <https://localfoodworks.eu/>;
+      skos:notation ?externalIdentifier.
+
+    OPTIONAL { ?supplier gr:name ?oldName }
+  }`);
+}
+
+/**
+ * Loads the supplier information for a product, assuming the supplier is already in the database.
+ * @param {string} offeringUri Product for which the supplier was found.
+ * @param {SupplierInfo} supplier Detailed information of the supplier.
+ * @return {Promise}
+ */
+async function loadProductSupplier(offeringUri, supplier) {
+  console.log(`Loading supplier for ${offeringUri}`);
+
+  // Find the identifier of the supplier
+  const supplierInfos = (await query(`${PREFIXES}
+  SELECT ?supplier
+  WHERE {
+    ?supplier gr:name ${sparqlEscapeString(supplier.name)}.
+    }`)).results.bindings;
+  const supplierUri = supplierInfos.length ? supplierInfos[0].supplier.value : null;
+  const description = purify.sanitize(
+    (supplier.description || "").replaceAll("\n", "<br />"),
+    { USE_PROFILES: { html: true } }
+  );
+
+  // Update information of the supplier
+  if( supplierUri ) {
+    await update(`${PREFIXES}
+    DELETE {
+      ${sparqlEscapeUri(supplierUri)} ?p ?o.
+    } WHERE {
+      VALUES ?p { schema:email dct:description }
+      ${sparqlEscapeUri(supplierUri)} ?p ?o.
+    };
+    INSERT DATA {
+      ${sparqlEscapeUri(supplierUri)} schema:email ${sparqlEscapeString(supplier.emailAddress)};
+        dct:description ${sparqlEscapeString(description)};
+        gr:offers ${sparqlEscapeUri(offeringUri)}.
+    }`)
+  }
+
+  // TODO: Attach the picture to the supplier
+}
+
+/**
   * Loads the pages by walking over each page number.
  */
 async function loadPages(jobUri) {
@@ -854,6 +1001,8 @@ async function loadPages(jobUri) {
   console.log(`ENDED WITH PAGE ${counter}`);
 }
 
+const LOAD_PAGES_ON_STARTUP = false;  // NOTE: this may require updated acces rights
+
 setTimeout( async () => {
   // downloadShareFile("https://veeakker.be/", "veeakker-index.html");
 
@@ -864,11 +1013,12 @@ setTimeout( async () => {
   // console.log(JSON.stringify(page.content[0]));
 
   // B. load all pages
-  const loadAllPages = false;
+  const loadAllPages = LOAD_PAGES_ON_STARTUP;
   if (loadAllPages) {
     const jobUri = await createLoadJob();
     try {
       await startJob(jobUri);
+      await loadSuppliers(jobUri);
       await loadPages(jobUri);
       await finishJob(jobUri);
     } catch (e) {
@@ -899,10 +1049,12 @@ app.post('/harvest', async function(req, res) {
     const jobUri = await createLoadJob();
     try {
       await startJob(jobUri);
+      await loadSuppliers(jobUri);
       await loadPages(jobUri);
       await finishJob(jobUri);
       res.status(200).send("Harvest successful");
     } catch (e) {
+      console.error(`${e}`);
       await errorJob(jobUri);
       res.status(500).send("Failed to harvest");
     }
