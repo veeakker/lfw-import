@@ -402,7 +402,8 @@ async function ensureProductOffers(product, productUri) {
     INSERT DATA {
       ${sparqlEscapeUri(offering.typeAndQuantity)}
         gr:amountOfThisGood ${sparqlEscapeDecimal(amount)};
-        gr:hasUnitOfMeasurement ${sparqlEscapeString(unit)}
+        gr:hasUnitOfMeasurement ${sparqlEscapeString(unit)};
+        gr:typeOfGood ${sparqlEscapeUri(productUri)}.
     }`);
   return offering;
 }
@@ -416,7 +417,7 @@ async function ensureProductOffers(product, productUri) {
 
 /**
  * Ensures there's a complete offering resource available.
- * @return {OfferingResources} resources Resulting entities
+ * @return {Promise<OfferingResources>} resources Resulting entities
  */
 async function ensureOfferingResources(productUri) {
   // ensure offering URI exists
